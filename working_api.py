@@ -53,6 +53,7 @@ class PlayerStats(BaseModel):
 
 # API Endpoints
 @app.get("/", response_class=HTMLResponse)
+
 async def root():
     """Redirect to demo page"""
     return """
@@ -226,6 +227,20 @@ async def get_player(player_id: str):
         "team": result[3] or "Unknown"
     }
 
+def get_stat_column(stat_type):
+    """Get the appropriate SQL column expression for a stat type"""
+    if stat_type == 'total_yards':
+        return "COALESCE(pgs.receiving_yards, 0) + COALESCE(pgs.rushing_yards, 0)"
+    else:
+        return f"pgs.{stat_type}"
+
+def get_stat_condition(stat_type):
+    """Get the appropriate WHERE condition for a stat type"""
+    if stat_type == 'total_yards':
+        return "(pgs.receiving_yards IS NOT NULL OR pgs.rushing_yards IS NOT NULL)"
+    else:
+        return f"pgs.{stat_type} IS NOT NULL"
+
 @app.get("/api/players/{player_id}/analysis")
 async def get_player_analysis(
     player_id: str,
@@ -246,10 +261,13 @@ async def get_player_analysis(
     player_name = player_result[0]
     
     # Get last N games with the specified stat - ONLY REAL 2024 DATA
+    stat_column = get_stat_column(stat_type)
+    stat_condition = get_stat_condition(stat_type)
+    
     query = f"""
     WITH last_games AS (
         SELECT 
-            pgs.{stat_type} as stat_value,
+            {stat_column} as stat_value,
             g.game_date,
             g.week,
             g.season,
@@ -257,7 +275,7 @@ async def get_player_analysis(
         FROM players p
         JOIN player_game_stats pgs ON p.player_id = pgs.player_id
         JOIN games g ON pgs.game_id = g.game_id
-        WHERE p.player_id = ? AND pgs.{stat_type} IS NOT NULL AND g.season IN (2024, 2025)
+        WHERE p.player_id = ? AND {stat_condition} AND g.season IN (2024, 2025)
     )
     SELECT 
         stat_value,
@@ -283,6 +301,13 @@ async def get_player_analysis(
     hit_rate = (hits / games_analyzed) * 100 if games_analyzed > 0 else 0
     average_value = sum(row[0] for row in results) / games_analyzed if games_analyzed > 0 else 0
     
+    # Calculate 2025 season specific hit rate
+    games_2025 = [row for row in results if row[3] == 2025]  # Filter for 2025 season
+    games_2025_count = len(games_2025)
+    hits_2025 = sum(row[5] for row in games_2025)
+    hit_rate_2025 = (hits_2025 / games_2025_count) * 100 if games_2025_count > 0 else 0
+    average_value_2025 = sum(row[0] for row in games_2025) / games_2025_count if games_2025_count > 0 else 0
+    
     # Format game details
     games = []
     for row in results:
@@ -306,7 +331,13 @@ async def get_player_analysis(
         "hits": hits,
         "hit_rate": round(hit_rate, 2),
         "average_value": round(average_value, 2),
-        "games": games
+        "games": games,
+        "season_2025": {
+            "games_analyzed": games_2025_count,
+            "hits": hits_2025,
+            "hit_rate": round(hit_rate_2025, 2),
+            "average_value": round(average_value_2025, 2)
+        }
     }
 
 @app.get("/api/analytics/trending")
@@ -320,6 +351,9 @@ async def get_trending_players(
     conn = get_db_connection()
     cursor = conn.cursor()
     
+    stat_column = get_stat_column(stat_type)
+    stat_condition = get_stat_condition(stat_type)
+    
     query = f"""
     WITH player_analysis AS (
         SELECT 
@@ -328,14 +362,14 @@ async def get_trending_players(
             p.position,
             t.abbr as team,
             COUNT(*) as games_analyzed,
-            SUM(CASE WHEN pgs.{stat_type} >= ? THEN 1 ELSE 0 END) as hits,
-            ROUND(100.0 * SUM(CASE WHEN pgs.{stat_type} >= ? THEN 1 ELSE 0 END) / COUNT(*), 2) as hit_rate,
-            ROUND(AVG(pgs.{stat_type}), 1) as avg_value
+            SUM(CASE WHEN {stat_column} >= ? THEN 1 ELSE 0 END) as hits,
+            ROUND(100.0 * SUM(CASE WHEN {stat_column} >= ? THEN 1 ELSE 0 END) / COUNT(*), 2) as hit_rate,
+            ROUND(AVG({stat_column}), 1) as avg_value
         FROM players p
         JOIN player_game_stats pgs ON p.player_id = pgs.player_id
         JOIN games g ON pgs.game_id = g.game_id
         LEFT JOIN teams t ON p.team_id = t.team_id
-        WHERE pgs.{stat_type} IS NOT NULL 
+        WHERE {stat_condition} 
           AND g.season IN (2024, 2025)
           AND p.player_id NOT IN (
               SELECT player_id FROM team_changes WHERE player_id IS NOT NULL
@@ -469,16 +503,19 @@ async def get_best_picks(
         'WR': [
             ('receiving_yards', [40.5, 50.5, 60.5, 75.5, 90.5, 100.5]), 
             ('receptions', [2.5, 3.5, 4.5, 5.5, 6.5, 7.5]),
-            ('rushing_yards', [5.5, 10.5, 15.5, 20.5])
+            ('rushing_yards', [5.5, 10.5, 15.5, 20.5]),
+            ('total_yards', [45.5, 60.5, 75.5, 90.5, 105.5, 120.5])
         ],
         'RB': [
             ('rushing_yards', [40.5, 50.5, 60.5, 75.5, 90.5, 100.5]), 
             ('receiving_yards', [10.5, 20.5, 30.5, 40.5, 50.5]),
-            ('receptions', [1.5, 2.5, 3.5, 4.5, 5.5])
+            ('receptions', [1.5, 2.5, 3.5, 4.5, 5.5]),
+            ('total_yards', [50.5, 70.5, 90.5, 110.5, 130.5, 150.5])
         ],
         'TE': [
             ('receiving_yards', [25.5, 35.5, 45.5, 55.5, 65.5]), 
-            ('receptions', [2.5, 3.5, 4.5, 5.5, 6.5])
+            ('receptions', [2.5, 3.5, 4.5, 5.5, 6.5]),
+            ('total_yards', [25.5, 35.5, 45.5, 55.5, 65.5])
         ]
     }
     
@@ -486,6 +523,9 @@ async def get_best_picks(
     
     for position, stats_list in position_stats.items():
         for stat_type, line_values in stats_list:
+            stat_column = get_stat_column(stat_type)
+            stat_condition = get_stat_condition(stat_type)
+            
             for line_value in line_values:
                 cursor.execute(f"""
                     SELECT 
@@ -494,15 +534,15 @@ async def get_best_picks(
                         p.position,
                         t.abbr as team,
                         COUNT(*) as games_analyzed,
-                        SUM(CASE WHEN pgs.{stat_type} >= ? THEN 1 ELSE 0 END) as hits,
-                        ROUND(100.0 * SUM(CASE WHEN pgs.{stat_type} >= ? THEN 1 ELSE 0 END) / COUNT(*), 2) as hit_rate,
-                        ROUND(AVG(pgs.{stat_type}), 1) as avg_value
+                        SUM(CASE WHEN {stat_column} >= ? THEN 1 ELSE 0 END) as hits,
+                        ROUND(100.0 * SUM(CASE WHEN {stat_column} >= ? THEN 1 ELSE 0 END) / COUNT(*), 2) as hit_rate,
+                        ROUND(AVG({stat_column}), 1) as avg_value
                     FROM players p
                     JOIN player_game_stats pgs ON p.player_id = pgs.player_id
                     JOIN games g ON pgs.game_id = g.game_id
                     LEFT JOIN teams t ON p.team_id = t.team_id
                     WHERE p.position = ? 
-                      AND pgs.{stat_type} IS NOT NULL 
+                      AND {stat_condition} 
                       AND g.season IN (2024, 2025)
                       AND p.player_id NOT IN (
                           SELECT player_id FROM team_changes WHERE player_id IS NOT NULL
@@ -513,9 +553,9 @@ async def get_best_picks(
                       )
                     GROUP BY p.player_id, p.full_name, p.position, t.abbr
                     HAVING COUNT(*) >= ? AND 
-                           ROUND(100.0 * SUM(CASE WHEN pgs.{stat_type} >= ? THEN 1 ELSE 0 END) / COUNT(*), 2) >= ? AND
-                           ROUND(100.0 * SUM(CASE WHEN pgs.{stat_type} >= ? THEN 1 ELSE 0 END) / COUNT(*), 2) <= ? AND
-                           ? >= (AVG(pgs.{stat_type}) * 0.75) AND ? <= (AVG(pgs.{stat_type}) * 1.25)
+                           ROUND(100.0 * SUM(CASE WHEN {stat_column} >= ? THEN 1 ELSE 0 END) / COUNT(*), 2) >= ? AND
+                           ROUND(100.0 * SUM(CASE WHEN {stat_column} >= ? THEN 1 ELSE 0 END) / COUNT(*), 2) <= ? AND
+                           ? >= (AVG({stat_column}) * 0.75) AND ? <= (AVG({stat_column}) * 1.25)
                     ORDER BY hit_rate DESC, games_analyzed DESC
                 """, (line_value, line_value, position, min_games, line_value, min_hit_rate, line_value, max_hit_rate, line_value, line_value))
                 
@@ -560,104 +600,303 @@ async def demo_page():
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Page Picks - NFL Analytics Demo</title>
         <script src="https://cdn.tailwindcss.com"></script>
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+        <style>
+            * { font-family: 'Inter', sans-serif; }
+            .gradient-bg { 
+                background: linear-gradient(135deg, #1f2937 0%, #111827 100%);
+            }
+            .card-hover { 
+                transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+                backdrop-filter: blur(20px);
+                background: rgba(255, 255, 255, 0.1);
+                border: 1px solid rgba(255, 255, 255, 0.2);
+                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            }
+            .card-hover:hover { 
+                transform: translateY(-12px) scale(1.02);
+                box-shadow: 0 25px 50px -12px rgba(234, 88, 12, 0.3);
+                background: rgba(255, 255, 255, 0.2);
+                border: 1px solid rgba(255, 255, 255, 0.3);
+            }
+            .glass-effect {
+                background: rgba(255, 255, 255, 0.15);
+                backdrop-filter: blur(25px);
+                border: 1px solid rgba(255, 255, 255, 0.25);
+                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            }
+            .floating {
+                animation: floating 3s ease-in-out infinite;
+            }
+            @keyframes floating {
+                0%, 100% { transform: translateY(0px); }
+                50% { transform: translateY(-10px); }
+            }
+            .btn-modern {
+                background: linear-gradient(135deg, rgba(234, 88, 12, 0.8) 0%, rgba(249, 115, 22, 0.8) 100%);
+                backdrop-filter: blur(20px);
+                border: 1px solid rgba(255, 255, 255, 0.3);
+                transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+                position: relative;
+                overflow: hidden;
+                box-shadow: 0 8px 32px rgba(234, 88, 12, 0.2);
+            }
+            .btn-modern:hover {
+                transform: translateY(-3px) scale(1.05);
+                box-shadow: 0 15px 35px rgba(234, 88, 12, 0.4);
+                background: linear-gradient(135deg, rgba(234, 88, 12, 0.9) 0%, rgba(249, 115, 22, 0.9) 100%);
+                border: 1px solid rgba(255, 255, 255, 0.4);
+            }
+            .btn-modern::before {
+                content: '';
+                position: absolute;
+                top: 0;
+                left: -100%;
+                width: 100%;
+                height: 100%;
+                background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent);
+                transition: left 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+            }
+            .btn-modern:hover::before {
+                left: 100%;
+            }
+            .stat-card {
+                background: linear-gradient(135deg, rgba(255,255,255,0.15) 0%, rgba(255,255,255,0.05) 100%);
+                backdrop-filter: blur(25px);
+                border: 1px solid rgba(255,255,255,0.25);
+                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            }
+            .liquid-glass {
+                background: linear-gradient(135deg, rgba(255,255,255,0.25) 0%, rgba(255,255,255,0.15) 100%);
+                backdrop-filter: blur(20px);
+                border: 1px solid rgba(255,255,255,0.3);
+                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+                position: relative;
+                overflow: hidden;
+            }
+            .liquid-glass::before {
+                content: '';
+                position: absolute;
+                top: 0;
+                left: 0;
+                right: 0;
+                height: 1px;
+                background: linear-gradient(90deg, transparent, rgba(255,255,255,0.4), transparent);
+            }
+            .liquid-glass::after {
+                content: '';
+                position: absolute;
+                top: 0;
+                left: -100%;
+                width: 100%;
+                height: 100%;
+                background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
+                animation: shimmer 3s infinite;
+            }
+            @keyframes shimmer {
+                0% { left: -100%; }
+                100% { left: 100%; }
+            }
+        </style>
     </head>
-    <body class="bg-gray-100 min-h-screen">
-        <div class="container mx-auto px-4 py-8">
-            <div class="text-center mb-12">
-                <h1 class="text-5xl font-bold text-gray-800 mb-4">🏈 Page Picks</h1>
-                <h2 class="text-2xl text-gray-600 mb-2">NFL Analytics & Betting Insights</h2>
-                <p class="text-gray-500 max-w-2xl mx-auto">Real-time player statistics, hit rate analysis, and data-driven betting recommendations based on actual NFL performance data.</p>
+    <body class="bg-gradient-to-br from-orange-900 via-amber-900 to-yellow-900 min-h-screen">
+        <!-- Liquid Glass Background -->
+        <div class="fixed inset-0 overflow-hidden pointer-events-none">
+            <div class="absolute -top-40 -right-40 w-96 h-96 bg-orange-500 rounded-full mix-blend-multiply filter blur-3xl opacity-30 animate-pulse"></div>
+            <div class="absolute -bottom-40 -left-40 w-96 h-96 bg-amber-500 rounded-full mix-blend-multiply filter blur-3xl opacity-30 animate-pulse" style="animation-delay: 2s;"></div>
+            <div class="absolute top-40 left-40 w-96 h-96 bg-yellow-500 rounded-full mix-blend-multiply filter blur-3xl opacity-30 animate-pulse" style="animation-delay: 4s;"></div>
+            <div class="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-80 h-80 bg-orange-400 rounded-full mix-blend-multiply filter blur-2xl opacity-20 animate-pulse" style="animation-delay: 1s;"></div>
+        </div>
+        
+        <div class="gradient-bg text-white py-20 relative">
+            <div class="container mx-auto px-6 text-center relative z-10">
+                <div class="floating mb-8">
+                    <h1 class="text-7xl font-black mb-6 tracking-tight">
+                        <span class="text-white drop-shadow-2xl">🏈</span>
+                        <span class="text-white drop-shadow-2xl">Page Picks</span>
+                    </h1>
+                </div>
+                <h2 class="text-3xl font-semibold text-white mb-4 tracking-wide">NFL Analytics & Betting Insights</h2>
+                <p class="text-xl text-white max-w-3xl mx-auto leading-relaxed mb-8">
+                    Real-time player statistics, hit rate analysis, and data-driven betting recommendations 
+                    based on actual NFL performance data.
+                </p>
+                <div class="flex justify-center space-x-4 text-sm text-white">
+                    <span class="px-6 py-3 liquid-glass rounded-full backdrop-blur-sm border border-white border-opacity-30">Real Data</span>
+                    <span class="px-6 py-3 liquid-glass rounded-full backdrop-blur-sm border border-white border-opacity-30">Live Updates</span>
+                    <span class="px-6 py-3 liquid-glass rounded-full backdrop-blur-sm border border-white border-opacity-30">AI-Powered</span>
+                </div>
             </div>
+        </div>
+        
+        <div class="container mx-auto px-4 py-12 relative z-10">
             
-            <div class="bg-white rounded-lg shadow-lg p-8 mb-8">
-                <h2 class="text-2xl font-semibold mb-4">Live Player Analysis</h2>
-                <div class="max-w-2xl mx-auto">
+            <div class="liquid-glass card-hover rounded-2xl p-8 mb-8">
+                <div class="flex items-center mb-6">
+                    <div class="w-12 h-12 bg-gradient-to-r from-orange-500 to-amber-600 rounded-xl flex items-center justify-center mr-4 liquid-glass">
+                        <span class="text-2xl">🔍</span>
+                    </div>
                     <div>
-                        <h3 class="text-lg font-semibold mb-4">Custom Analysis</h3>
-                        <div class="space-y-4">
-                            <div>
-                                <label class="block text-sm font-medium mb-2">Search Player</label>
-                                <input type="text" id="playerSearch" placeholder="Type player name..." 
-                                       class="w-full p-2 border rounded" onkeyup="searchPlayers()">
-                                <div id="playerResults" class="mt-2 max-h-40 overflow-y-auto border rounded bg-white hidden">
-                                    <!-- Search results will appear here -->
-                                </div>
-                                <input type="hidden" id="selectedPlayerId" value="">
-                                <div id="selectedPlayer" class="mt-2 p-2 bg-blue-50 rounded hidden">
-                                    <span class="font-medium">Selected: </span>
-                                    <span id="selectedPlayerName"></span>
-                                </div>
+                        <h2 class="text-3xl font-bold text-white">Live Player Analysis</h2>
+                        <p class="text-white">Deep dive into individual player performance</p>
+                    </div>
+                </div>
+                <div class="max-w-2xl mx-auto">
+                    <div class="space-y-6">
+                        <div>
+                            <label class="block text-sm font-semibold text-white mb-3">Search Player</label>
+                            <input type="text" id="playerSearch" placeholder="Type player name..." 
+                                   class="w-full p-4 liquid-glass rounded-xl focus:ring-2 focus:ring-orange-300 transition-all duration-300 text-white placeholder-gray-300" onkeyup="searchPlayers()">
+                            <div id="playerResults" class="mt-3 max-h-40 overflow-y-auto liquid-glass rounded-xl hidden shadow-lg">
+                                <!-- Search results will appear here -->
                             </div>
-                            <select id="statSelect" class="w-full p-2 border rounded">
-                                <option value="receiving_yards">Receiving Yards</option>
-                                <option value="passing_yards">Passing Yards</option>
-                                <option value="rushing_yards">Rushing Yards</option>
-                                <option value="receptions">Receptions</option>
-                            </select>
-                            <input type="number" id="lineValue" placeholder="Line Value" 
-                                   class="w-full p-2 border rounded" value="100">
-                            <button onclick="runCustomAnalysis()" 
-                                    class="w-full bg-indigo-500 text-white py-2 px-4 rounded hover:bg-indigo-600">
-                                Analyze
-                            </button>
+                            <input type="hidden" id="selectedPlayerId" value="">
+                            <div id="selectedPlayer" class="mt-3 p-4 liquid-glass rounded-xl border border-orange-300 border-opacity-30 hidden">
+                                <span class="font-semibold text-orange-200">Selected: </span>
+                                <span id="selectedPlayerName" class="text-orange-100"></span>
+                            </div>
                         </div>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-sm font-semibold text-white mb-3">Stat Type</label>
+                                <select id="statSelect" class="w-full p-4 liquid-glass rounded-xl focus:ring-2 focus:ring-orange-300 transition-all duration-300 text-white">
+                                    <option value="receiving_yards" class="bg-gray-800">Receiving Yards</option>
+                                    <option value="passing_yards" class="bg-gray-800">Passing Yards</option>
+                                    <option value="rushing_yards" class="bg-gray-800">Rushing Yards</option>
+                                    <option value="receptions" class="bg-gray-800">Receptions</option>
+                                    <option value="total_yards" class="bg-gray-800">Total Scrimmage Yards (Rush + Rec)</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-semibold text-white mb-3">Line Value</label>
+                                <input type="number" id="lineValue" placeholder="100" 
+                                       class="w-full p-4 liquid-glass rounded-xl focus:ring-2 focus:ring-orange-300 transition-all duration-300 text-white placeholder-gray-300" value="100">
+                            </div>
+                        </div>
+                        <button onclick="runCustomAnalysis()" 
+                                class="w-full btn-modern text-white py-4 px-6 rounded-xl font-semibold text-lg relative">
+                            <span class="relative z-10">🚀 Analyze Player</span>
+                        </button>
                     </div>
                 </div>
                 
                 <div id="results" class="mt-8">
-                    <p class="text-gray-500">Select a player above to see their analysis...</p>
+                    <div class="text-center py-12">
+                        <div class="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                            <span class="text-2xl">⚡</span>
+                        </div>
+                        <p class="text-white text-lg">Select a player above to see their analysis...</p>
+                    </div>
                 </div>
             </div>
             
-            <div class="bg-white rounded-lg shadow-lg p-8 mb-8">
-                <h2 class="text-2xl font-semibold mb-4">🎯 Our Picks - Realistic Betting Lines</h2>
-                <p class="text-gray-600 mb-6">Sportsbook lines within 25% of player averages with 70-90% hit rates</p>
+            <div class="liquid-glass card-hover rounded-2xl p-8 mb-8">
+                <div class="flex items-center mb-6">
+                    <div class="w-12 h-12 bg-gradient-to-r from-orange-500 to-red-600 rounded-xl flex items-center justify-center mr-4 liquid-glass">
+                        <span class="text-2xl">🎯</span>
+                    </div>
+                    <div>
+                        <h2 class="text-3xl font-bold text-white">Our Picks - Realistic Betting Lines</h2>
+                        <p class="text-white">Sportsbook lines within 25% of player averages with 70-90% hit rates</p>
+                    </div>
+                </div>
                 
-                <div class="flex gap-4 mb-6">
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
                     <button onclick="loadBestPicks(70, 90, 5)" 
-                            class="bg-green-500 text-white py-2 px-4 rounded hover:bg-green-600">
-                        All Picks (70-90%)
+                            class="group liquid-glass text-white py-4 px-6 rounded-xl font-semibold text-lg transition-all duration-300 hover:scale-105 hover:shadow-lg border border-orange-300 border-opacity-30">
+                        <div class="flex items-center justify-center">
+                            <span class="mr-2">📊</span>
+                            <div class="text-left">
+                                <div class="font-bold">All Picks</div>
+                                <div class="text-sm opacity-90">70-90% Hit Rate</div>
+                            </div>
+                        </div>
                     </button>
                     <button onclick="loadBestPicks(75, 85, 5)" 
-                            class="bg-blue-500 text-white py-2 px-4 rounded hover:bg-blue-600">
-                        Solid Picks (75-85%)
+                            class="group liquid-glass text-white py-4 px-6 rounded-xl font-semibold text-lg transition-all duration-300 hover:scale-105 hover:shadow-lg border border-amber-300 border-opacity-30">
+                        <div class="flex items-center justify-center">
+                            <span class="mr-2">💎</span>
+                            <div class="text-left">
+                                <div class="font-bold">Solid Picks</div>
+                                <div class="text-sm opacity-90">75-85% Hit Rate</div>
+                            </div>
+                        </div>
                     </button>
                     <button onclick="loadBestPicks(85, 95, 10)" 
-                            class="bg-purple-500 text-white py-2 px-4 rounded hover:bg-purple-600">
-                        Elite Picks (85-95%)
+                            class="group liquid-glass text-white py-4 px-6 rounded-xl font-semibold text-lg transition-all duration-300 hover:scale-105 hover:shadow-lg border border-yellow-300 border-opacity-30">
+                        <div class="flex items-center justify-center">
+                            <span class="mr-2">👑</span>
+                            <div class="text-left">
+                                <div class="font-bold">Elite Picks</div>
+                                <div class="text-sm opacity-90">85-95% Hit Rate</div>
+                            </div>
+                        </div>
                     </button>
                 </div>
                 
                 <div id="picksResults" class="space-y-4">
-                    <p class="text-gray-500">Click a button above to load our best picks...</p>
+                    <div class="text-center py-12">
+                        <div class="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                            <span class="text-2xl">🎲</span>
+                        </div>
+                        <p class="text-white text-lg">Click a button above to load our best picks...</p>
+                    </div>
                 </div>
             </div>
             
-            <div class="bg-white rounded-lg shadow-lg p-8">
-                <h2 class="text-2xl font-semibold mb-4">📊 Position Analysis</h2>
-                <p class="text-gray-600 mb-6">Analyze players by position to find the best betting opportunities</p>
+            <div class="liquid-glass card-hover rounded-2xl p-8">
+                <div class="flex items-center mb-6">
+                    <div class="w-12 h-12 bg-gradient-to-r from-amber-500 to-yellow-600 rounded-xl flex items-center justify-center mr-4 liquid-glass">
+                        <span class="text-2xl">📊</span>
+                    </div>
+                    <div>
+                        <h2 class="text-3xl font-bold text-white">Position Analysis</h2>
+                        <p class="text-white">Analyze players by position to find the best betting opportunities</p>
+                    </div>
+                </div>
                 
-                <div class="flex gap-4 mb-6">
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
                     <button onclick="loadPositionAnalysis('QB')" 
-                            class="bg-blue-500 text-white py-2 px-4 rounded hover:bg-blue-600">
-                        Quarterbacks
+                            class="group liquid-glass text-white py-4 px-6 rounded-xl font-semibold text-lg transition-all duration-300 hover:scale-105 hover:shadow-lg border border-orange-300 border-opacity-30">
+                        <div class="flex flex-col items-center">
+                            <span class="text-2xl mb-2">🏈</span>
+                            <div class="font-bold">Quarterbacks</div>
+                            <div class="text-sm opacity-90">QB</div>
+                        </div>
                     </button>
                     <button onclick="loadPositionAnalysis('WR')" 
-                            class="bg-green-500 text-white py-2 px-4 rounded hover:bg-green-600">
-                        Wide Receivers
+                            class="group liquid-glass text-white py-4 px-6 rounded-xl font-semibold text-lg transition-all duration-300 hover:scale-105 hover:shadow-lg border border-amber-300 border-opacity-30">
+                        <div class="flex flex-col items-center">
+                            <span class="text-2xl mb-2">🏃</span>
+                            <div class="font-bold">Wide Receivers</div>
+                            <div class="text-sm opacity-90">WR</div>
+                        </div>
                     </button>
                     <button onclick="loadPositionAnalysis('RB')" 
-                            class="bg-orange-500 text-white py-2 px-4 rounded hover:bg-orange-600">
-                        Running Backs
+                            class="group liquid-glass text-white py-4 px-6 rounded-xl font-semibold text-lg transition-all duration-300 hover:scale-105 hover:shadow-lg border border-yellow-300 border-opacity-30">
+                        <div class="flex flex-col items-center">
+                            <span class="text-2xl mb-2">💪</span>
+                            <div class="font-bold">Running Backs</div>
+                            <div class="text-sm opacity-90">RB</div>
+                        </div>
                     </button>
                     <button onclick="loadPositionAnalysis('TE')" 
-                            class="bg-purple-500 text-white py-2 px-4 rounded hover:bg-purple-600">
-                        Tight Ends
+                            class="group liquid-glass text-white py-4 px-6 rounded-xl font-semibold text-lg transition-all duration-300 hover:scale-105 hover:shadow-lg border border-orange-400 border-opacity-30">
+                        <div class="flex flex-col items-center">
+                            <span class="text-2xl mb-2">🎯</span>
+                            <div class="font-bold">Tight Ends</div>
+                            <div class="text-sm opacity-90">TE</div>
+                        </div>
                     </button>
                 </div>
                 
                 <div id="positionResults" class="space-y-4">
-                    <p class="text-gray-500">Click a position above to see the best players...</p>
+                    <div class="text-center py-12">
+                        <div class="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                            <span class="text-2xl">⚡</span>
+                        </div>
+                        <p class="text-white text-lg">Click a position above to see the best players...</p>
+                    </div>
                 </div>
             </div>
         </div>
@@ -688,7 +927,7 @@ async def demo_page():
                 }
                 
                 // Show loading state
-                resultsDiv.innerHTML = '<div class="p-2 text-gray-500">Searching...</div>';
+                resultsDiv.innerHTML = '<div class="p-2 text-white">Searching...</div>';
                 resultsDiv.classList.remove('hidden');
                 
                 // Debounce the search
@@ -703,12 +942,12 @@ async def demo_page():
                         const data = await response.json();
                         
                         if (data.players.length === 0) {
-                            resultsDiv.innerHTML = '<div class="p-2 text-gray-500">No players found. Try a different name.</div>';
+                            resultsDiv.innerHTML = '<div class="p-2 text-white">No players found. Try a different name.</div>';
                         } else {
                             resultsDiv.innerHTML = data.players.map(player => 
                                 `<div class="p-2 hover:bg-blue-50 cursor-pointer border-b transition-colors" onclick="selectPlayer('${player.player_id}', '${player.player_name} (${player.position}) - ${player.team}')">
                                     <div class="font-medium">${player.player_name}</div>
-                                    <div class="text-sm text-gray-600">${player.position} - ${player.team}</div>
+                                    <div class="text-sm text-white">${player.position} - ${player.team}</div>
                                 </div>`
                             ).join('');
                         }
@@ -752,36 +991,49 @@ async def demo_page():
                 const hitRateColor = data.hit_rate >= 60 ? 'text-green-600' : 
                                    data.hit_rate >= 40 ? 'text-yellow-600' : 'text-red-600';
                 
+                const hitRate2025Color = data.season_2025.hit_rate >= 60 ? 'text-green-400' : 
+                                        data.season_2025.hit_rate >= 40 ? 'text-yellow-400' : 'text-red-400';
+                
                 resultsDiv.innerHTML = `
-                    <div class="bg-gray-50 rounded-lg p-6">
-                        <h4 class="text-xl font-semibold mb-4">${data.player_name} - ${data.stat_type.replace('_', ' ').toUpperCase()}</h4>
+                    <div class="liquid-glass rounded-2xl p-8 border border-orange-300 border-opacity-30">
+                        <h4 class="text-2xl font-bold text-white mb-6">${data.player_name} - ${data.stat_type.replace('_', ' ').toUpperCase()}</h4>
                         
-                        <div class="grid md:grid-cols-2 gap-6">
-                            <div>
-                                <h5 class="font-semibold mb-2">Analysis Results</h5>
-                                <div class="space-y-2">
-                                    <p><strong>Line Value:</strong> ${data.line_value}+</p>
-                                    <p><strong>Games Analyzed:</strong> ${data.games_analyzed}</p>
-                                    <p><strong>Hits:</strong> ${data.hits}</p>
-                                    <p><strong>Hit Rate:</strong> <span class="${hitRateColor} font-bold">${data.hit_rate}%</span></p>
-                                    <p><strong>Average:</strong> ${data.average_value}</p>
+                        <div class="grid md:grid-cols-3 gap-6">
+                            <div class="liquid-glass rounded-xl p-6 border border-orange-200 border-opacity-20">
+                                <h5 class="font-bold text-white mb-4 text-lg">Overall Analysis</h5>
+                                <div class="space-y-3">
+                                    <p class="text-gray-200"><strong>Line Value:</strong> ${data.line_value}+</p>
+                                    <p class="text-gray-200"><strong>Games Analyzed:</strong> ${data.games_analyzed}</p>
+                                    <p class="text-gray-200"><strong>Hits:</strong> ${data.hits}</p>
+                                    <p class="text-gray-200"><strong>Hit Rate:</strong> <span class="${hitRateColor} font-bold text-lg">${data.hit_rate}%</span></p>
+                                    <p class="text-gray-200"><strong>Average:</strong> ${data.average_value}</p>
                                 </div>
                             </div>
                             
-                            <div>
-                                <h5 class="font-semibold mb-2">Last ${data.games_analyzed} Games Analyzed</h5>
-                                <div class="max-h-80 overflow-y-auto space-y-1">
+                            <div class="liquid-glass rounded-xl p-6 border border-orange-200 border-opacity-20">
+                                <h5 class="font-bold text-white mb-4 text-lg">2025 Season</h5>
+                                <div class="space-y-3">
+                                    <p class="text-gray-200"><strong>Games:</strong> ${data.season_2025.games_analyzed}</p>
+                                    <p class="text-gray-200"><strong>Hits:</strong> ${data.season_2025.hits}</p>
+                                    <p class="text-gray-200"><strong>Hit Rate:</strong> <span class="${hitRate2025Color} font-bold text-lg">${data.season_2025.hit_rate}%</span></p>
+                                    <p class="text-gray-200"><strong>Average:</strong> ${data.season_2025.average_value}</p>
+                                </div>
+                            </div>
+                            
+                            <div class="liquid-glass rounded-xl p-6 border border-orange-200 border-opacity-20 md:col-span-3">
+                                <h5 class="font-bold text-white mb-4 text-lg">Last ${data.games_analyzed} Games Analyzed</h5>
+                                <div class="max-h-80 overflow-y-auto space-y-2">
                                     ${data.games.map(game => `
-                                        <div class="flex justify-between items-center text-sm p-2 bg-white rounded border-l-4 ${game.hit ? 'border-green-400' : 'border-red-400'}">
+                                        <div class="flex justify-between items-center text-sm p-3 liquid-glass rounded-lg border ${game.hit ? 'border-green-400 border-opacity-30' : 'border-red-400 border-opacity-30'}">
                                             <div class="flex flex-col">
-                                                <span class="font-medium">${game.season} Week ${game.week}</span>
-                                                <span class="text-xs text-gray-500">${game.game_date}</span>
+                                                <span class="font-semibold text-white">${game.season} Week ${game.week}</span>
+                                                <span class="text-xs text-gray-300">${game.game_date}</span>
                                             </div>
                                             <div class="text-right">
-                                                <span class="font-bold ${game.hit ? 'text-green-600' : 'text-red-600'}">
+                                                <span class="font-bold text-lg ${game.hit ? 'text-green-400' : 'text-red-400'}">
                                                     ${game.stat_value} ${game.hit ? '✓' : '✗'}
                                                 </span>
-                                                <div class="text-xs text-gray-500">Game #${game.game_number}</div>
+                                                <div class="text-xs text-gray-300">Game #${game.game_number}</div>
                                             </div>
                                         </div>
                                     `).join('')}
@@ -799,7 +1051,7 @@ async def demo_page():
                 const resultsDiv = document.getElementById('picksResults');
                 
                 // Show loading state
-                resultsDiv.innerHTML = '<div class="text-center py-4"><div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div><p class="mt-2 text-gray-500">Loading best picks...</p></div>';
+                resultsDiv.innerHTML = '<div class="text-center py-4"><div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div><p class="mt-2 text-white">Loading best picks...</p></div>';
                 
                 try {
                     const response = await fetch(`/api/picks/best?min_hit_rate=${minHitRate}&max_hit_rate=${maxHitRate}&min_games=${minGames}&limit=100`);
@@ -813,15 +1065,15 @@ async def demo_page():
                     if (data.picks.length === 0) {
                         resultsDiv.innerHTML = `
                             <div class="text-center py-8">
-                                <p class="text-gray-500 text-lg">No picks found with ${minHitRate}-${maxHitRate}% hit rate</p>
-                                <p class="text-gray-400 text-sm">Try adjusting the hit rate range or minimum games requirement</p>
+                                <p class="text-white text-lg">No picks found with ${minHitRate}-${maxHitRate}% hit rate</p>
+                                <p class="text-white text-sm">Try adjusting the hit rate range or minimum games requirement</p>
                             </div>
                         `;
                     } else {
                         resultsDiv.innerHTML = `
                             <div class="mb-4">
-                                <h4 class="text-lg font-semibold text-gray-800">Found ${data.count} picks with ${minHitRate}-${maxHitRate}% hit rate</h4>
-                                <p class="text-sm text-gray-600">Minimum ${minGames} games required</p>
+                                <h4 class="text-lg font-semibold text-white">Found ${data.count} picks with ${minHitRate}-${maxHitRate}% hit rate</h4>
+                                <p class="text-sm text-white">Minimum ${minGames} games required</p>
                             </div>
                             <div class="grid gap-4">
                                 ${data.picks.map(pick => {
@@ -834,11 +1086,11 @@ async def demo_page():
                                         <div class="flex justify-between items-start mb-2">
                                             <div>
                                                 <h5 class="font-semibold text-lg">${pick.player_name}</h5>
-                                                <p class="text-gray-600">${pick.position} - ${pick.team}</p>
+                                                <p class="text-white">${pick.position} - ${pick.team}</p>
                                             </div>
                                             <div class="text-right">
                                                 <div class="text-2xl font-bold ${hitRateColor}">${pick.hit_rate}%</div>
-                                                <div class="text-sm text-gray-500">Hit Rate</div>
+                                                <div class="text-sm text-white">Hit Rate</div>
                                             </div>
                                         </div>
                                         <div class="grid grid-cols-2 gap-4 text-sm">
@@ -855,7 +1107,7 @@ async def demo_page():
                                                 <span class="font-medium">Hits:</span> ${pick.hits}/${pick.games_analyzed}
                                             </div>
                                         </div>
-                                        <div class="mt-2 text-sm text-gray-500">
+                                        <div class="mt-2 text-sm text-white">
                                             Average: ${pick.average_value} ${pick.stat_type.replace('_', ' ')}
                                         </div>
                                     </div>`;
@@ -873,7 +1125,7 @@ async def demo_page():
                 const resultsDiv = document.getElementById('positionResults');
                 
                 // Show loading state
-                resultsDiv.innerHTML = '<div class="text-center py-4"><div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div><p class="mt-2 text-gray-500">Loading position analysis...</p></div>';
+                resultsDiv.innerHTML = '<div class="text-center py-4"><div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div><p class="mt-2 text-white">Loading position analysis...</p></div>';
                 
                 // Define position-appropriate stats (only using stats that exist in database)
                 const positionStats = {
@@ -925,8 +1177,8 @@ async def demo_page():
                     if (allResults.length === 0) {
                         resultsDiv.innerHTML = `
                             <div class="text-center py-8">
-                                <p class="text-gray-500 text-lg">No ${position} players found</p>
-                                <p class="text-gray-400 text-sm">Try a different position or adjust the criteria</p>
+                                <p class="text-white text-lg">No ${position} players found</p>
+                                <p class="text-white text-sm">Try a different position or adjust the criteria</p>
                             </div>
                         `;
                     } else {
@@ -936,8 +1188,8 @@ async def demo_page():
                         
                         resultsDiv.innerHTML = `
                             <div class="mb-4">
-                                <h4 class="text-lg font-semibold text-gray-800">Top ${position} Players - All Stats</h4>
-                                <p class="text-sm text-gray-600">${allResults.length} total opportunities analyzed</p>
+                                <h4 class="text-lg font-semibold text-white">Top ${position} Players - All Stats</h4>
+                                <p class="text-sm text-white">${allResults.length} total opportunities analyzed</p>
                             </div>
                             <div class="grid gap-4">
                                 ${topResults.map(player => {
@@ -950,11 +1202,11 @@ async def demo_page():
                                         <div class="flex justify-between items-start mb-2">
                                             <div>
                                                 <h5 class="font-semibold text-lg">${player.player_name}</h5>
-                                                <p class="text-gray-600">${player.team}</p>
+                                                <p class="text-white">${player.team}</p>
                                             </div>
                                             <div class="text-right">
                                                 <div class="text-2xl font-bold ${hitRateColor}">${player.hit_rate}%</div>
-                                                <div class="text-sm text-gray-500">Hit Rate</div>
+                                                <div class="text-sm text-white">Hit Rate</div>
                                             </div>
                                         </div>
                                         <div class="grid grid-cols-2 gap-4 text-sm">
