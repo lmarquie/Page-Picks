@@ -15,5 +15,3 @@ beautifulsoup4==4.12.2
 nfl-data-py==0.3.3
 
 
-
-

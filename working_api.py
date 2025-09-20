@@ -52,20 +52,30 @@ class PlayerStats(BaseModel):
     week: int
 
 # API Endpoints
-@app.get("/")
+@app.get("/", response_class=HTMLResponse)
 async def root():
-    return {
-        "message": "Page Picks NFL Analytics API", 
-        "status": "running",
-        "version": "1.0.0",
-        "endpoints": {
-            "players": "/api/players",
-            "analysis": "/api/players/{player_id}/analysis",
-            "trending": "/api/analytics/trending",
-            "position": "/api/analytics/position/{position}",
-            "demo": "/demo"
-        }
-    }
+    """Redirect to demo page"""
+    return """
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Page Picks - NFL Analytics</title>
+        <script>
+            // Redirect to demo page
+            window.location.href = '/demo';
+        </script>
+    </head>
+    <body>
+        <div style="text-align: center; padding: 50px; font-family: Arial, sans-serif;">
+            <h1>🏈 Page Picks NFL Analytics</h1>
+            <p>Redirecting to demo page...</p>
+            <p><a href="/demo">Click here if you're not redirected automatically</a></p>
+        </div>
+    </body>
+    </html>
+    """
 
 @app.get("/health")
 async def health_check():
@@ -450,11 +460,26 @@ async def get_best_picks(
     cursor = conn.cursor()
     
     # Define position-appropriate stat types with realistic betting lines
+    # Only using stats that exist in the database
     position_stats = {
-        'QB': [('passing_yards', [200.5, 225.5, 250.5, 275.5, 300.5]), ('rushing_yards', [15.5, 20.5, 25.5, 30.5, 35.5])],
-        'WR': [('receiving_yards', [40.5, 50.5, 60.5, 75.5, 90.5, 100.5]), ('receptions', [2.5, 3.5, 4.5, 5.5, 6.5, 7.5])],
-        'RB': [('rushing_yards', [40.5, 50.5, 60.5, 75.5, 90.5, 100.5]), ('receptions', [1.5, 2.5, 3.5, 4.5, 5.5])],
-        'TE': [('receiving_yards', [25.5, 35.5, 45.5, 55.5, 65.5]), ('receptions', [2.5, 3.5, 4.5, 5.5, 6.5])]
+        'QB': [
+            ('passing_yards', [200.5, 225.5, 250.5, 275.5, 300.5]), 
+            ('rushing_yards', [15.5, 20.5, 25.5, 30.5, 35.5])
+        ],
+        'WR': [
+            ('receiving_yards', [40.5, 50.5, 60.5, 75.5, 90.5, 100.5]), 
+            ('receptions', [2.5, 3.5, 4.5, 5.5, 6.5, 7.5]),
+            ('rushing_yards', [5.5, 10.5, 15.5, 20.5])
+        ],
+        'RB': [
+            ('rushing_yards', [40.5, 50.5, 60.5, 75.5, 90.5, 100.5]), 
+            ('receiving_yards', [10.5, 20.5, 30.5, 40.5, 50.5]),
+            ('receptions', [1.5, 2.5, 3.5, 4.5, 5.5])
+        ],
+        'TE': [
+            ('receiving_yards', [25.5, 35.5, 45.5, 55.5, 65.5]), 
+            ('receptions', [2.5, 3.5, 4.5, 5.5, 6.5])
+        ]
     }
     
     all_picks = []
@@ -490,7 +515,7 @@ async def get_best_picks(
                     HAVING COUNT(*) >= ? AND 
                            ROUND(100.0 * SUM(CASE WHEN pgs.{stat_type} >= ? THEN 1 ELSE 0 END) / COUNT(*), 2) >= ? AND
                            ROUND(100.0 * SUM(CASE WHEN pgs.{stat_type} >= ? THEN 1 ELSE 0 END) / COUNT(*), 2) <= ? AND
-                           ? >= (AVG(pgs.{stat_type}) * 0.7) AND ? <= (AVG(pgs.{stat_type}) * 1.3)
+                           ? >= (AVG(pgs.{stat_type}) * 0.75) AND ? <= (AVG(pgs.{stat_type}) * 1.25)
                     ORDER BY hit_rate DESC, games_analyzed DESC
                 """, (line_value, line_value, position, min_games, line_value, min_hit_rate, line_value, max_hit_rate, line_value, line_value))
                 
@@ -538,7 +563,11 @@ async def demo_page():
     </head>
     <body class="bg-gray-100 min-h-screen">
         <div class="container mx-auto px-4 py-8">
-            <h1 class="text-4xl font-bold text-center mb-8">🏈 Page Picks NFL Analytics</h1>
+            <div class="text-center mb-12">
+                <h1 class="text-5xl font-bold text-gray-800 mb-4">🏈 Page Picks</h1>
+                <h2 class="text-2xl text-gray-600 mb-2">NFL Analytics & Betting Insights</h2>
+                <p class="text-gray-500 max-w-2xl mx-auto">Real-time player statistics, hit rate analysis, and data-driven betting recommendations based on actual NFL performance data.</p>
+            </div>
             
             <div class="bg-white rounded-lg shadow-lg p-8 mb-8">
                 <h2 class="text-2xl font-semibold mb-4">Live Player Analysis</h2>
@@ -582,7 +611,7 @@ async def demo_page():
             
             <div class="bg-white rounded-lg shadow-lg p-8 mb-8">
                 <h2 class="text-2xl font-semibold mb-4">🎯 Our Picks - Realistic Betting Lines</h2>
-                <p class="text-gray-600 mb-6">Sportsbook lines within 30% of player averages with 70-90% hit rates</p>
+                <p class="text-gray-600 mb-6">Sportsbook lines within 25% of player averages with 70-90% hit rates</p>
                 
                 <div class="flex gap-4 mb-6">
                     <button onclick="loadBestPicks(70, 90, 5)" 
@@ -593,9 +622,9 @@ async def demo_page():
                             class="bg-blue-500 text-white py-2 px-4 rounded hover:bg-blue-600">
                         Solid Picks (75-85%)
                     </button>
-                    <button onclick="loadBestPicks(80, 90, 10)" 
+                    <button onclick="loadBestPicks(85, 95, 10)" 
                             class="bg-purple-500 text-white py-2 px-4 rounded hover:bg-purple-600">
-                        Elite Picks (80-90%)
+                        Elite Picks (85-95%)
                     </button>
                 </div>
                 
@@ -604,23 +633,31 @@ async def demo_page():
                 </div>
             </div>
             
-            <div class="grid md:grid-cols-2 gap-8">
-                <div class="bg-white rounded-lg shadow-lg p-6">
-                    <h3 class="text-xl font-semibold mb-4">API Endpoints</h3>
-                    <div class="space-y-2 text-sm font-mono">
-                        <p><strong>GET</strong> /api/players - List all players</p>
-                        <p><strong>GET</strong> /api/players/{id} - Get player details</p>
-                        <p><strong>GET</strong> /api/players/{id}/analysis - Player analysis</p>
-                        <p><strong>GET</strong> /api/analytics/trending - Trending players</p>
-                        <p><strong>GET</strong> /api/analytics/position/{pos} - Position analysis</p>
-                    </div>
+            <div class="bg-white rounded-lg shadow-lg p-8">
+                <h2 class="text-2xl font-semibold mb-4">📊 Position Analysis</h2>
+                <p class="text-gray-600 mb-6">Analyze players by position to find the best betting opportunities</p>
+                
+                <div class="flex gap-4 mb-6">
+                    <button onclick="loadPositionAnalysis('QB')" 
+                            class="bg-blue-500 text-white py-2 px-4 rounded hover:bg-blue-600">
+                        Quarterbacks
+                    </button>
+                    <button onclick="loadPositionAnalysis('WR')" 
+                            class="bg-green-500 text-white py-2 px-4 rounded hover:bg-green-600">
+                        Wide Receivers
+                    </button>
+                    <button onclick="loadPositionAnalysis('RB')" 
+                            class="bg-orange-500 text-white py-2 px-4 rounded hover:bg-orange-600">
+                        Running Backs
+                    </button>
+                    <button onclick="loadPositionAnalysis('TE')" 
+                            class="bg-purple-500 text-white py-2 px-4 rounded hover:bg-purple-600">
+                        Tight Ends
+                    </button>
                 </div>
                 
-                <div class="bg-white rounded-lg shadow-lg p-6">
-                    <h3 class="text-xl font-semibold mb-4">Database Info</h3>
-                    <div id="dbInfo" class="text-sm">
-                        <p>Loading database info...</p>
-                    </div>
+                <div id="positionResults" class="space-y-4">
+                    <p class="text-gray-500">Click a position above to see the best players...</p>
                 </div>
             </div>
         </div>
@@ -788,8 +825,8 @@ async def demo_page():
                             </div>
                             <div class="grid gap-4">
                                 ${data.picks.map(pick => {
-                                    const hitRateColor = pick.hit_rate >= 85 ? 'text-green-600' : 
-                                                       pick.hit_rate >= 80 ? 'text-blue-600' : 
+                                    const hitRateColor = pick.hit_rate >= 90 ? 'text-green-600' : 
+                                                       pick.hit_rate >= 85 ? 'text-blue-600' : 
                                                        pick.hit_rate >= 75 ? 'text-orange-600' : 'text-gray-600';
                                     
                                     return `
@@ -832,23 +869,124 @@ async def demo_page():
                 }
             }
             
-            // Load database info
-            async function loadDbInfo() {
+            async function loadPositionAnalysis(position) {
+                const resultsDiv = document.getElementById('positionResults');
+                
+                // Show loading state
+                resultsDiv.innerHTML = '<div class="text-center py-4"><div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div><p class="mt-2 text-gray-500">Loading position analysis...</p></div>';
+                
+                // Define position-appropriate stats (only using stats that exist in database)
+                const positionStats = {
+                    'QB': [
+                        { stat: 'passing_yards', name: 'Passing Yards', lines: [200.5, 225.5, 250.5, 275.5, 300.5] },
+                        { stat: 'rushing_yards', name: 'Rushing Yards', lines: [15.5, 20.5, 25.5, 30.5, 35.5] }
+                    ],
+                    'WR': [
+                        { stat: 'receiving_yards', name: 'Receiving Yards', lines: [40.5, 50.5, 60.5, 75.5, 90.5, 100.5] },
+                        { stat: 'receptions', name: 'Receptions', lines: [2.5, 3.5, 4.5, 5.5, 6.5, 7.5] },
+                        { stat: 'rushing_yards', name: 'Rushing Yards', lines: [5.5, 10.5, 15.5, 20.5] }
+                    ],
+                    'RB': [
+                        { stat: 'rushing_yards', name: 'Rushing Yards', lines: [40.5, 50.5, 60.5, 75.5, 90.5, 100.5] },
+                        { stat: 'receiving_yards', name: 'Receiving Yards', lines: [10.5, 20.5, 30.5, 40.5, 50.5] },
+                        { stat: 'receptions', name: 'Receptions', lines: [1.5, 2.5, 3.5, 4.5, 5.5] }
+                    ],
+                    'TE': [
+                        { stat: 'receiving_yards', name: 'Receiving Yards', lines: [25.5, 35.5, 45.5, 55.5, 65.5] },
+                        { stat: 'receptions', name: 'Receptions', lines: [2.5, 3.5, 4.5, 5.5, 6.5] }
+                    ]
+                };
+                
+                const stats = positionStats[position] || [];
+                let allResults = [];
+                
                 try {
-                    const response = await fetch('/health');
-                    const data = await response.json();
-                    document.getElementById('dbInfo').innerHTML = `
-                        <p><strong>Status:</strong> ${data.status}</p>
-                        <p><strong>Players:</strong> ${data.players}</p>
-                        <p><strong>Database:</strong> ${data.database}</p>
-                    `;
+                    // Load data for each stat type
+                    for (const statInfo of stats) {
+                        for (const lineValue of statInfo.lines) {
+                            const response = await fetch(`/api/analytics/position/${position}?stat_type=${statInfo.stat}&line_value=${lineValue}&min_games=5`);
+                            
+                            if (response.ok) {
+                                const data = await response.json();
+                                
+                                // Add stat info to each player result
+                                data.players.forEach(player => {
+                                    allResults.push({
+                                        ...player,
+                                        stat_type: statInfo.stat,
+                                        stat_name: statInfo.name,
+                                        line_value: lineValue
+                                    });
+                                });
+                            }
+                        }
+                    }
+                    
+                    if (allResults.length === 0) {
+                        resultsDiv.innerHTML = `
+                            <div class="text-center py-8">
+                                <p class="text-gray-500 text-lg">No ${position} players found</p>
+                                <p class="text-gray-400 text-sm">Try a different position or adjust the criteria</p>
+                            </div>
+                        `;
+                    } else {
+                        // Sort by hit rate and get top results
+                        allResults.sort((a, b) => b.hit_rate - a.hit_rate);
+                        const topResults = allResults.slice(0, 15);
+                        
+                        resultsDiv.innerHTML = `
+                            <div class="mb-4">
+                                <h4 class="text-lg font-semibold text-gray-800">Top ${position} Players - All Stats</h4>
+                                <p class="text-sm text-gray-600">${allResults.length} total opportunities analyzed</p>
+                            </div>
+                            <div class="grid gap-4">
+                                ${topResults.map(player => {
+                                    const hitRateColor = player.hit_rate >= 90 ? 'text-green-600' : 
+                                                       player.hit_rate >= 85 ? 'text-blue-600' : 
+                                                       player.hit_rate >= 75 ? 'text-orange-600' : 'text-gray-600';
+                                    
+                                    return `
+                                    <div class="border rounded-lg p-4 hover:shadow-md transition-shadow">
+                                        <div class="flex justify-between items-start mb-2">
+                                            <div>
+                                                <h5 class="font-semibold text-lg">${player.player_name}</h5>
+                                                <p class="text-gray-600">${player.team}</p>
+                                            </div>
+                                            <div class="text-right">
+                                                <div class="text-2xl font-bold ${hitRateColor}">${player.hit_rate}%</div>
+                                                <div class="text-sm text-gray-500">Hit Rate</div>
+                                            </div>
+                                        </div>
+                                        <div class="grid grid-cols-2 gap-4 text-sm">
+                                            <div>
+                                                <span class="font-medium">Stat:</span> ${player.stat_name}
+                                            </div>
+                                            <div>
+                                                <span class="font-medium">Line:</span> Over ${player.line_value}
+                                            </div>
+                                            <div>
+                                                <span class="font-medium">Games:</span> ${player.games_analyzed}
+                                            </div>
+                                            <div>
+                                                <span class="font-medium">Hits:</span> ${player.hits}/${player.games_analyzed}
+                                            </div>
+                                            <div>
+                                                <span class="font-medium">Average:</span> ${player.average_value}
+                                            </div>
+                                            <div>
+                                                <span class="font-medium">Value:</span> ${player.average_value >= player.line_value ? 'Good' : 'Under'}
+                                            </div>
+                                        </div>
+                                    </div>`;
+                                }).join('')}
+                            </div>
+                        `;
+                    }
                 } catch (error) {
-                    document.getElementById('dbInfo').innerHTML = `<p class="text-red-500">Error loading info</p>`;
+                    console.error('Error loading position analysis:', error);
+                    resultsDiv.innerHTML = '<div class="text-center py-4 text-red-500">Error loading position analysis. Please try again.</div>';
                 }
             }
-            
-            // Load initial data
-            loadDbInfo();
         </script>
     </body>
     </html>
